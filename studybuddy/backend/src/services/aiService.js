@@ -1,54 +1,26 @@
 const axios = require('axios');
-const { OpenAI } = require('openai');
 const dotenv = require('dotenv');
 
 dotenv.config();
 
-const HF_API_KEY = process.env.HF_API_KEY;
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
-
-// Initialize OpenAI client
-const openai = new OpenAI({
-  apiKey: OPENAI_API_KEY,
-});
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
 
 // Available AI models
 const AI_MODELS = {
-  huggingface_distil: {
-    name: 'Hugging Face Flan-T5 Base (Primary)',
-    endpoint: 'https://api-inference.huggingface.co/models/google/flan-t5-base',
-    maxTokens: 500
-  },
-  gpt_neo: {
-    name: 'EleutherAI GPT-Neo 125M',
-    endpoint: 'https://api-inference.huggingface.co/models/EleutherAI/gpt-neo-125m',
-    maxTokens: 500
-  },
-  huggingface: {
-    name: 'Hugging Face GPT-2',
-    endpoint: 'https://api-inference.huggingface.co/models/gpt2',
-    maxTokens: 250
-  },
-  microsoft_dialo: {
-    name: 'Microsoft DialoGPT',
-    endpoint: 'https://api-inference.huggingface.co/models/microsoft/DialoGPT-medium',
-    maxTokens: 1000
-  },
-  deepseek: {
-    name: 'DeepSeek AI (Fallback)',
-    endpoint: 'https://api.deepseek.com/v1/chat/completions',
+  openrouter_primary: {
+    name: 'Open Router - GPT-OSS-20B (Free)',
+    model: 'openai/gpt-oss-20b:free',
     maxTokens: 2000
   },
-  deepseek_large: {
-    name: 'DeepSeek AI Large (Fallback)',
-    endpoint: 'https://api.deepseek.com/v1/chat/completions',
-    maxTokens: 4000,
-    model: 'deepseek-chat-large'
+  openrouter_fallback: {
+    name: 'Open Router - Fallback Model',
+    model: 'openai/gpt-oss-20b:free',
+    maxTokens: 2000
   }
 };
 
-async function askAI(prompt, model = 'huggingface_distil') {
+async function askAI(prompt, model = 'openrouter_primary') {
   const selectedModel = AI_MODELS[model];
 
   if (!selectedModel) {
@@ -56,136 +28,113 @@ async function askAI(prompt, model = 'huggingface_distil') {
   }
 
   try {
-    if (model.startsWith('huggingface') || model === 'microsoft_dialo' || model === 'gpt_neo') {
-      console.log('Calling askHuggingFace for model:', model);
-      return await askHuggingFace(prompt, selectedModel);
-    } else if (model.startsWith('deepseek')) {
-      console.log('Calling askDeepSeek for model:', model);
-      return await askDeepSeek(prompt, selectedModel);
-    }
+    console.log('Calling Open Router API with model:', selectedModel.model);
+    return await askOpenRouter(prompt, selectedModel);
   } catch (error) {
     console.error(`Error with ${model}:`, error.message);
-    // Fallback to DistilGPT-2 if primary fails
-    if (model !== 'huggingface_distil') {
-      console.log('Falling back to DistilGPT-2...');
-      return await askHuggingFace(prompt, AI_MODELS.huggingface_distil);
+    // Fallback to alternative model if primary fails
+    if (model !== 'openrouter_fallback') {
+      console.log('Falling back to Open Router fallback model...');
+      return await askOpenRouter(prompt, AI_MODELS.openrouter_fallback);
     }
-    throw new Error('All AI services failed. Please try again later.');
+    throw new Error('Open Router service failed. Please try again later.');
   }
 }
 
-async function askHuggingFace(prompt, modelConfig) {
+async function askOpenRouter(prompt, modelConfig) {
+  if (!OPENROUTER_API_KEY) {
+    throw new Error('OPENROUTER_API_KEY is not configured. Please set your Open Router API key.');
+  }
+
   try {
-    console.log('Calling Hugging Face API:', modelConfig.endpoint);
+    console.log('Calling Open Router API:', OPENROUTER_API_URL);
     
     const response = await axios.post(
-      modelConfig.endpoint,
-      { inputs: prompt },
+      OPENROUTER_API_URL,
+      {
+        model: modelConfig.model,
+        messages: [
+          {
+            role: 'system',
+            content: 'You are a helpful AI study assistant. Provide clear, accurate, and educational responses to help students learn effectively.'
+          },
+          {
+            role: 'user',
+            content: prompt
+          }
+        ],
+        max_tokens: modelConfig.maxTokens,
+        temperature: 0.7
+      },
       {
         headers: {
-          Authorization: `Bearer ${HF_API_KEY}`,
+          'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
           'Content-Type': 'application/json',
+          'HTTP-Referer': 'https://studybuddy.example.com',
+          'X-Title': 'StudyBuddy'
         },
         timeout: 60000
       }
     );
 
-    console.log('✓ Hugging Face response received');
+    console.log('✓ Open Router response received');
     
     if (response.data && response.data.error) {
-      throw new Error(`Hugging Face API Error: ${response.data.error}`);
+      throw new Error(`Open Router API Error: ${response.data.error}`);
     }
 
-    // Handle different response formats
-    let generatedText = '';
-    if (Array.isArray(response.data)) {
-      generatedText = response.data[0]?.generated_text || '';
-    } else if (response.data && typeof response.data === 'object') {
-      generatedText = response.data.generated_text || '';
-    } else if (typeof response.data === 'string') {
-      generatedText = response.data;
+    if (response.data && response.data.choices && response.data.choices[0]) {
+      return response.data.choices[0].message.content;
     }
 
-    // Clean up the response
-    if (generatedText.startsWith(prompt)) {
-      generatedText = generatedText.substring(prompt.length).trim();
-    }
-
-    return generatedText || 'I apologize, but I could not generate a proper response. Please try rephrasing your question.';
+    throw new Error('Invalid response format from Open Router');
 
   } catch (error) {
-    if (error.response?.status === 503) {
-      throw new Error('Hugging Face model is loading. Please try again in a moment.');
+    if (error.response?.status === 401) {
+      throw new Error('Invalid Open Router API key. Please verify your OPENROUTER_API_KEY.');
     } else if (error.response?.status === 429) {
-      throw new Error('Hugging Face API rate limited. Please try again later.');
-    } else if (error.response?.status === 401) {
-      throw new Error('Invalid Hugging Face token. Please verify your API key is correct.');
-    } else if (error.response?.status === 403) {
-      throw new Error('Access denied. Token may not have permission for this model.');
-    } else if (error.response?.status === 404) {
-      throw new Error('Model not found. Please ensure the model ID is correct.');
+      throw new Error('Open Router API rate limited. Please try again later.');
+    } else if (error.response?.status === 503) {
+      throw new Error('Open Router service is temporarily unavailable. Please try again later.');
     } else {
-      throw new Error(`Hugging Face API error: ${error.message}`);
+      throw new Error(`Open Router API error: ${error.message}`);
     }
   }
-}
-
-async function askDeepSeek(prompt, modelConfig = AI_MODELS.deepseek) {
-  const response = await axios.post(
-    'https://api.deepseek.com/v1/chat/completions',
-    {
-      model: modelConfig.model || 'deepseek-chat',
-      messages: [
-        {
-          role: 'system',
-          content: 'You are a helpful AI study assistant. Provide clear, accurate, and educational responses. You are powered by DeepSeek AI.'
-        },
-        {
-          role: 'user',
-          content: prompt
-        }
-      ],
-      max_tokens: modelConfig.maxTokens,
-      temperature: 0.7
-    },
-    {
-      headers: {
-        'Authorization': `Bearer ${DEEPSEEK_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      timeout: 30000
-    }
-  );
-
-  if (response.data && response.data.choices && response.data.choices[0]) {
-    return response.data.choices[0].message.content;
-  }
-
-  throw new Error('Invalid response from DeepSeek API');
 }
 
 async function generateQuiz(topic, numQuestions = 10) {
   const prompt = `Generate ${numQuestions} multiple-choice questions about "${topic}". Each question should have 4 options (A, B, C, D) with one correct answer. Format as JSON array with structure: [{"question": "Question text", "options": ["A) Option1", "B) Option2", "C) Option3", "D) Option4"], "correctAnswer": "A"}]`;
 
   try {
-    // Use ChatGPT for quiz generation as it's better at structured output
-    const completion = await openai.chat.completions.create({
-      model: 'gpt-4',
-      messages: [
-        {
-          role: 'system',
-          content: 'You are a quiz generator. Always respond with valid JSON only, no additional text.'
-        },
-        {
-          role: 'user',
-          content: prompt
+    // Use Open Router for quiz generation
+    const completion = await axios.post(
+      OPENROUTER_API_URL,
+      {
+        model: 'openai/gpt-oss-20b:free',
+        messages: [
+          {
+            role: 'system',
+            content: 'You are a quiz generator. Always respond with valid JSON only, no additional text.'
+          },
+          {
+            role: 'user',
+            content: prompt
+          }
+        ],
+        max_tokens: 3000,
+        temperature: 0.7
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+          'Content-Type': 'application/json',
+          'HTTP-Referer': 'https://studybuddy.example.com',
+          'X-Title': 'StudyBuddy'
         }
-      ],
-      max_tokens: 3000,
-      temperature: 0.7
-    });
+      }
+    );
 
-    const quizText = completion.choices[0].message.content;
+    const quizText = completion.data.choices[0].message.content;
     const quizData = JSON.parse(quizText);
 
     // Validate the quiz structure
@@ -200,7 +149,7 @@ async function generateQuiz(topic, numQuestions = 10) {
     }));
 
   } catch (error) {
-    console.error('ChatGPT quiz generation failed:', error);
+    console.error('Open Router quiz generation failed:', error);
     // Fallback to basic quiz generation
     return generateBasicQuiz(topic, numQuestions);
   }
